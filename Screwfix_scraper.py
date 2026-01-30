@@ -63,12 +63,12 @@ class ScrewfixScraper:
             # Prefer ChromeDriverManager for version compatibility
             service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.wait = WebDriverWait(self.driver, 20)
+            self.wait = WebDriverWait(self.driver, 30)
             logger.info("Driver initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize driver: {e}")
             self.driver = webdriver.Chrome(options=chrome_options)
-            self.wait = WebDriverWait(self.driver, 20)
+            self.wait = WebDriverWait(self.driver, 30)
 
     def safe_click(self, element):
         """Attempts normal click, falls back to JS click."""
@@ -339,8 +339,6 @@ class ScrewfixScraper:
             
         return all_data
 
-
-
     def scrape_all_pages(self, start_url):
         """Scrapes all paginated product pages starting from start_url."""
         self.driver.get(start_url)
@@ -434,12 +432,76 @@ class ScrewfixScraper:
             except: continue
         return products
 
+    def clean_dim(self, val_str):
+        """Extract numeric value and convert to meters."""
+        if not val_str or val_str == 'N/A': return "N/A"
+        val_str = str(val_str).lower().strip()
+        factor = 1.0
+        
+        if 'mm' in val_str: factor = 0.001
+        elif 'cm' in val_str: factor = 0.01
+        elif 'm' in val_str and 'mm' not in val_str: factor = 1.0
+        
+        clean_val = ""
+        for c in val_str:
+            if c.isdigit() or c == '.':
+                clean_val += c
+        
+        if not clean_val: return "N/A"
+        return float(clean_val) * factor
+
+    def clean_vol(self, val_str):
+        """Extract numeric value and convert to cubic meters (m3)."""
+        if not val_str or val_str == 'N/A': return "N/A"
+        val_str = str(val_str).lower().strip()
+        factor = 1.0
+        
+        # 1 ml = 1e-6 m3
+        # 1 litre = 0.001 m3
+        if 'ml' in val_str: factor = 1e-6
+        elif 'ltr' in val_str or 'liter' in val_str or 'litre' in val_str: factor = 0.001
+        elif 'm3' in val_str: factor = 1.0
+        
+        clean_val = ""
+        for c in val_str:
+            if c.isdigit() or c == '.':
+                clean_val += c
+                
+        if not clean_val: return "N/A"
+        return float(clean_val) * factor
+
+    def clean_area(self, val_str):
+        """Extract numeric value and convert to square meters (m2)."""
+        if not val_str or val_str == 'N/A': return "N/A"
+        val_str = str(val_str).lower().strip()
+        factor = 1.0
+        
+        if 'mm2' in val_str or 'mm²' in val_str: factor = 1e-6
+        elif 'cm2' in val_str or 'cm²' in val_str: factor = 0.0001
+        elif 'm2' in val_str or 'm²' in val_str: factor = 1.0
+        
+        clean_val = ""
+        for c in val_str:
+            if c.isdigit() or c == '.':
+                clean_val += c
+                
+        if not clean_val: return "N/A"
+        return float(clean_val) * factor
+
     def get_product_details(self, url):
         logger.info(f"Deep scanning: {url}")
         
         # 1. 403 handling: Try direct, if blocked, go to home then try again
         self.driver.get(url)
         time.sleep(2)
+        try:
+            self.handle_cookies()
+        except:
+            pass
+        try:
+            self.wait.until(lambda d: d.execute_script('return document.readyState')=='complete')
+        except:
+            time.sleep(1)
         
         if "Access Denied" in self.driver.title or "403" in self.driver.title or "unusual activity" in self.driver.page_source.lower():
             logger.warning(f"403 Blocked on {url}. Attempting homepage bypass...")
@@ -509,7 +571,8 @@ class ScrewfixScraper:
             "SKU": "N/A",
             "Supplier": "Screwfix",
             "Brand": "N/A",
-            "Quantity_Per_Pack": "N/A",
+            "Quantity": "N/A",
+            "Pieces_in_Pack": "N/A",
             "Coverage_M2": "N/A",
             "Volume_M3": "N/A",
             "Product_Length_M": "N/A",
@@ -518,8 +581,6 @@ class ScrewfixScraper:
             "Product_Weight_Kg": "N/A",
             "Product_Type": "N/A",
             "Material": "N/A",
-            "Packaging_Type": "N/A",
-            "Package_Contents": "N/A",
             "description": "N/A"
         }
 
@@ -606,10 +667,9 @@ class ScrewfixScraper:
                 src = img.get_attribute("src") or img.get_attribute("data-src")
                 if src:
                     # Remove query parameters and get high-res version
-                    clean_src = src.split('?')[0]
-                    # Try to get full-size image (remove size parameters)
+                    clean_src = src.split('?')[0].rstrip(',')
                     clean_src = clean_src.replace('_small', '').replace('_medium', '').replace('_thumbnail', '')
-                    if clean_src not in images and 'placeholder' not in clean_src.lower():
+                    if clean_src and clean_src not in images and 'placeholder' not in clean_src.lower():
                         images.append(clean_src)
         
             if images:
@@ -649,26 +709,26 @@ class ScrewfixScraper:
                     
                     # ===== MAPPING LOGIC =====
                     
-                    # QUANTITY / PACK SIZE
-                    if any(x in key for x in ["pieces in pack", "pack size", "quantity", "pack qty", "pcs"]):
-                        details["Quantity_Per_Pack"] = val
-                        # Auto-map Weight if kg/g is in Pack Size (Common for cement/mortar)
-                        if 'kg' in val.lower() or ' g' in val.lower() or 'ltr' in val.lower():
-                            if details["Product_Weight_Kg"] == "N/A":
-                                details["Product_Weight_Kg"] = val
+                    # VOLUME
+                    if "volume" in key:
+                        details["Volume_M3"] = self.clean_vol(val)
+
+                    # PIECES IN PACK
+                    elif "pieces in pack" in key:
+                         details["Pieces_in_Pack"] = val
                     
                     # LENGTH
                     elif any(x in key for x in ["product length", "length", "roll length", "cable length"]):
                         if not any(bad in key for bad in ["chuck", "drilling", "capacity"]):
-                            details["Product_Length_M"] = val
+                            details["Product_Length_M"] = self.clean_dim(val)
                     
                     # WIDTH
                     elif "width" in key:
-                        details["Product_Width"] = val
+                        details["Product_Width"] = self.clean_dim(val)
                     
                     # THICKNESS
                     elif any(x in key for x in ["thickness", "depth"]) and "product" in key:
-                        details["Product_Thickness"] = val
+                        details["Product_Thickness"] = self.clean_dim(val)
                     
                     # WEIGHT
                     elif "weight" in key:
@@ -681,7 +741,7 @@ class ScrewfixScraper:
                     
                     # COVERAGE
                     elif "coverage" in key:
-                        details["Coverage_M2"] = val
+                        details["Coverage_M2"] = self.clean_area(val)
                     
                     # MATERIAL
                     elif "material" in key:
@@ -693,18 +753,17 @@ class ScrewfixScraper:
                 
         except Exception as e:
             logger.warning(f"Spec table scraping failed: {e}")
-    
-        if details["Package_Contents"] == "N/A":
-            try:
-                # Look for "What's included" or "Package contents" section
-                contents_elem = self.driver.find_element(By.XPATH, 
-                "//h3[contains(text(), 'Product Contents') or contains(text(), 'Package Contents') or contains(text(), \"What's Included\")]/following-sibling::p | " +
-                "//h3[contains(text(), 'Product Contents') or contains(text(), 'Package Contents')]/following-sibling::ul"
-                )
-                details["Package_Contents"] = contents_elem.text.strip()
-            except:
-                pass
-    
+
+        # ==========================================
+        # 4.5 EXTRA FIELDS (User Requested)
+        # ==========================================
+        # Quantity from Input
+        try:
+            qty_input = self.driver.find_element(By.XPATH, "//input[@id='qty'] | //input[@data-qaid='pdp-product-quantity']")
+            details["Quantity"] = qty_input.get_attribute("value")
+        except:
+            pass
+
         if details["description"] == "N/A":
             try:
                 # Multiple description locations
@@ -733,38 +792,16 @@ class ScrewfixScraper:
         if details["Volume_M3"] == "N/A":
             if all(details[x] != "N/A" for x in ["Product_Length_M", "Product_Width", "Product_Thickness"]):
                 try:
-                    def clean_dim(val_str):
-                        """Extract numeric value and convert to meters"""
-                        val_str = val_str.lower().strip()
-                        factor = 1.0
-                        
-                        # Determine unit
-                        if 'mm' in val_str: 
-                            factor = 0.001
-                        elif 'cm' in val_str: 
-                            factor = 0.01
-                        elif 'm' in val_str and 'mm' not in val_str: 
-                            factor = 1.0
-                    
-                        # Extract number
-                        clean_val = ""
-                        for c in val_str:
-                            if c.isdigit() or c == '.':
-                                clean_val += c
-                    
-                        if not clean_val: 
-                            return 0.0
-                        
-                        return float(clean_val) * factor
-
-                    l = clean_dim(details["Product_Length_M"])
-                    w = clean_dim(details["Product_Width"])
-                    t = clean_dim(details["Product_Thickness"])
+                    # Values are already converted to meters (floats)
+                    l = details["Product_Length_M"]
+                    w = details["Product_Width"]
+                    t = details["Product_Thickness"]
                 
-                    if l > 0 and w > 0 and t > 0:
-                        calc_vol = l * w * t
-                        details["Volume_M3"] = f"{calc_vol:.6f} m³ (Calculated)"
-                        logger.info(f"✓ Calculated Volume: {calc_vol:.6f} m³")
+                    if isinstance(l, (int, float)) and isinstance(w, (int, float)) and isinstance(t, (int, float)):
+                        if l > 0 and w > 0 and t > 0:
+                            calc_vol = l * w * t
+                            details["Volume_M3"] = f"{calc_vol:.6f} m3 (Calculated)"
+                            logger.info(f"[v] Calculated Volume: {calc_vol:.6f} m3")
                 except Exception as e:
                     logger.debug(f"Volume calculation failed: {e}")
 
@@ -772,11 +809,11 @@ class ScrewfixScraper:
         # 7. FINAL VALIDATION & LOGGING
         # ==========================================
         extracted_fields = [k for k, v in details.items() if v != "N/A" and v != 0.0]
-        logger.info(f"✓ Extracted {len(extracted_fields)} fields: {', '.join(extracted_fields)}")
+        logger.info(f"[v] Extracted {len(extracted_fields)} fields: {', '.join(extracted_fields)}")
     
         missing_fields = [k for k, v in details.items() if v == "N/A"]
         if missing_fields:
-            logger.warning(f"✗ Missing fields: {', '.join(missing_fields)}")
+            logger.warning(f"[x] Missing fields: {', '.join(missing_fields)}")
 
         return details
 
@@ -872,7 +909,7 @@ def run_worker_batch(products_chunk, postcode):
     worker_results = []
     # Initialize a new scraper instance for this thread
     # We use headless=True for workers to keep it cleaner, limit GPU use to background
-    scraper = ScrewfixScraper(headless=True) 
+    scraper = ScrewfixScraper(headless=False) 
     
     try:
         scraper.driver.get(scraper.base_url)
@@ -897,7 +934,7 @@ def run_worker_batch(products_chunk, postcode):
                     continue
 
                 # Random delay between products
-                time.sleep(random.uniform(1.5, 4.0))
+                time.sleep(random.uniform(3.0, 6.0))
                 
                 details = scraper.get_product_details(item['Link'])
                 
