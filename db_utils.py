@@ -46,7 +46,11 @@ def create_table():
             product_thickness TEXT,
             product_weight_kg TEXT,
             product_type TEXT,
-            material TEXT
+            material TEXT,
+            unit_type TEXT,
+            pack_type TEXT,
+            pack_size TEXT,
+            coverage_per_item TEXT
         );
     """)
     
@@ -62,7 +66,11 @@ def create_table():
         ("product_thickness", "TEXT"),
         ("product_weight_kg", "TEXT"),
         ("product_type", "TEXT"),
-        ("material", "TEXT")
+        ("material", "TEXT"),
+        ("unit_type", "TEXT"),
+        ("pack_type", "TEXT"),
+        ("pack_size", "TEXT"),
+        ("coverage_per_item", "TEXT")
     ]
     for col_name, col_type in columns:
         try:
@@ -92,9 +100,9 @@ def save_product(product):
                 url, name, sku, brand, price, region, supplier, select_task, all_images, material_unit,
                 description, quantity, pieces_in_pack, coverage_m2, volume_m3, 
                 product_length_m, product_width, product_thickness, product_weight_kg, 
-                product_type, material
+                product_type, material, unit_type, pack_type, pack_size, coverage_per_item
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url) DO UPDATE SET
                 name = EXCLUDED.name,
                 sku = EXCLUDED.sku,
@@ -115,7 +123,11 @@ def save_product(product):
                 product_thickness = EXCLUDED.product_thickness,
                 product_weight_kg = EXCLUDED.product_weight_kg,
                 product_type = EXCLUDED.product_type,
-                material = EXCLUDED.material;
+                material = EXCLUDED.material,
+                unit_type = EXCLUDED.unit_type,
+                pack_type = EXCLUDED.pack_type,
+                pack_size = EXCLUDED.pack_size,
+                coverage_per_item = EXCLUDED.coverage_per_item;
         """, (
             product.get("Link"),
             product.get("Name"),
@@ -138,10 +150,28 @@ def save_product(product):
             product.get("Product_Weight_Kg"),
             product.get("Product_Type"),
             product.get("Material"),
+            product.get("Unit_Type"),
+            product.get("Pack_Type"),
+            product.get("Pack_Size"),
+            product.get("Coverage_Per_Item"),
         ))
         conn.commit()
     except Exception as e:
         print(f"Error saving product: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+def clear_products_table():
+    """Deletes all records from the products table."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("TRUNCATE TABLE products;")
+        conn.commit()
+        print("Table 'products' cleared successfully.")
+    except Exception as e:
+        print(f"Error clearing table: {e}")
     finally:
         cur.close()
         conn.close()

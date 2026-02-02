@@ -3,6 +3,7 @@ import json
 import time
 import pandas as pd
 import logging
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -82,6 +83,24 @@ class ScrewfixScraper:
             logger.info("Normal click failed, trying JS click...")
             self.driver.execute_script("arguments[0].click();", element)
 
+    def human_pause(self, min_s=0.3, max_s=1.0):
+        time.sleep(random.uniform(min_s, max_s))
+
+    def human_move_mouse(self, moves=2):
+        try:
+            body = self.driver.find_element(By.TAG_NAME, "body")
+            width = self.driver.execute_script("return window.innerWidth") or 1200
+            height = self.driver.execute_script("return window.innerHeight") or 800
+            actions = ActionChains(self.driver)
+            for _ in range(random.randint(1, moves)):
+                x = random.randint(10, max(11, int(width) - 10))
+                y = random.randint(10, max(11, int(height) - 10))
+                actions.move_to_element_with_offset(body, x, y)
+                actions.pause(random.uniform(0.05, 0.25))
+            actions.perform()
+        except:
+            pass
+
     def scroll_to_bottom(self, pause_time=1):
         """Scrolls to bottom of page using multiple methods for reliability."""
         logger.info("Scrolling to load all elements...")
@@ -90,11 +109,11 @@ class ScrewfixScraper:
             last_height = self.driver.execute_script("return document.body.scrollHeight")
             
             for _ in range(15): # Max 15 attempts to reach bottom
-                # Method 1: JS scrollTo
+                self.human_move_mouse(moves=1)
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                # Method 2: END key
                 body.send_keys(Keys.END)
-                time.sleep(pause_time)
+                self.driver.execute_script("window.scrollBy(0, arguments[0]);", random.randint(150, 350))
+                self.human_pause(pause_time * 0.6, pause_time * 1.4)
                 
                 new_height = self.driver.execute_script("return document.body.scrollHeight")
                 if new_height == last_height:
@@ -105,7 +124,7 @@ class ScrewfixScraper:
         
         # Scroll back to top
         self.driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(0.5)
+        self.human_pause(0.3, 0.8)
 
     def _collect_links_with_progressive_scroll(self, xpath, scroll_increment=600):
         """
@@ -121,11 +140,13 @@ class ScrewfixScraper:
             for i in range(20): # Max 20 scrolls
                 # Scroll via keys (more reliable for triggering events)
                 body.send_keys(Keys.PAGE_DOWN)
-                time.sleep(1.0) # Wait for load
+                self.human_pause(0.6, 1.4)
                 
-                # Also JS scroll to be sure
                 current_scroll += scroll_increment
                 self.driver.execute_script(f"window.scrollTo(0, {current_scroll});")
+                self.driver.execute_script("window.scrollBy(0, arguments[0]);", random.randint(120, 280))
+                if i % 3 == 0:
+                    self.human_move_mouse(moves=1)
                 
                 elements = self.driver.find_elements(By.XPATH, xpath)
                 previous_count = len(collected_links)
@@ -473,6 +494,11 @@ class ScrewfixScraper:
         elif 'ltr' in val_str or 'liter' in val_str or 'litre' in val_str: factor = 0.001
         elif 'm3' in val_str: factor = 1.0
         
+        # Handle ranges
+        if '-' in val_str:
+            parts = val_str.split('-')
+            val_str = parts[0].strip()
+
         clean_val = ""
         for c in val_str:
             if c.isdigit() or c == '.':
@@ -491,6 +517,11 @@ class ScrewfixScraper:
         elif 'cm2' in val_str or 'cm²' in val_str: factor = 0.0001
         elif 'm2' in val_str or 'm²' in val_str: factor = 1.0
         
+        # Handle ranges like "10-15 m2" by taking the first number or average
+        if '-' in val_str:
+            parts = val_str.split('-')
+            val_str = parts[0].strip() # Take the starting value of the range
+
         clean_val = ""
         for c in val_str:
             if c.isdigit() or c == '.':
@@ -499,12 +530,66 @@ class ScrewfixScraper:
         if not clean_val: return "N/A"
         return float(clean_val) * factor
 
+    def _format_unit_value(self, value, unit):
+        if value == "N/A":
+            return "N/A"
+        if isinstance(value, (int, float)):
+            return f"{value} {unit}"
+        value_str = str(value).strip()
+        if unit.lower() in value_str.lower():
+            return value_str
+        return f"{value_str} {unit}"
+
+    def _infer_units_from_text(self, text):
+        result = {
+            "Pack_Type": "N/A",
+            "Coverage_M2": "N/A",
+            "Volume_M3": "N/A",
+            "Length_M": "N/A",
+            "Weight_Kg": "N/A",
+            "Pieces_in_Pack": "N/A"
+        }
+        if not text:
+            return result
+        t = text.lower()
+
+        if re.search(r"\bbulk bag\b|\bbulk\b", t):
+            result["Pack_Type"] = "BULK"
+        elif re.search(r"\bbox\b", t):
+            result["Pack_Type"] = "BOX"
+        elif re.search(r"\bbag\b", t):
+            result["Pack_Type"] = "BAG"
+        elif re.search(r"\broll\b", t):
+            result["Pack_Type"] = "ROLL"
+        elif re.search(r"\bcase\b|\bpack\b", t):
+            result["Pack_Type"] = "PACK"
+
+        m2 = re.search(r"(\d+(?:\.\d+)?)\s*(m2|m²|sqm|sq\.?\s?m)\b", t)
+        if m2:
+            result["Coverage_M2"] = float(m2.group(1))
+
+        m3 = re.search(r"(\d+(?:\.\d+)?)\s*(m3|m³|cum|cu\.?\s?m)\b", t)
+        if m3:
+            result["Volume_M3"] = float(m3.group(1))
+
+        kg = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", t)
+        if kg:
+            result["Weight_Kg"] = float(kg.group(1))
+
+        m = re.search(r"(\d+(?:\.\d+)?)\s*m(?![23²³])\b", t)
+        if m:
+            result["Length_M"] = float(m.group(1))
+
+        # Pieces inference removed per user instruction
+
+        return result
+
     def get_product_details(self, url):
         logger.info(f"Deep scanning: {url}")
         
         # 1. 403 handling: Try direct, if blocked, go to home then try again
         self.driver.get(url)
-        time.sleep(2)
+        self.human_pause(1.4, 2.6)
         try:
             self.handle_cookies()
         except:
@@ -527,7 +612,7 @@ class ScrewfixScraper:
         # 2. Wait for page title/basic layout
         try:
             self.wait.until(EC.presence_of_element_located((By.XPATH, "//h1")))
-            time.sleep(1) # Small settle
+            self.human_pause(0.6, 1.2)
         except:
             logger.warning(f"Main product header presence timeout for {url}.")
     
@@ -545,7 +630,7 @@ class ScrewfixScraper:
                 for el in elements:
                     if el.is_displayed():
                         self.driver.execute_script("arguments[0].click();", el)
-                        time.sleep(0.5)
+                        self.human_pause(0.3, 0.8)
                         break
         except: pass
 
@@ -554,22 +639,23 @@ class ScrewfixScraper:
             body = self.driver.find_element(By.TAG_NAME, "body")
             for _ in range(8):
                 body.send_keys(Keys.PAGE_DOWN)
-                time.sleep(0.3)
+                self.human_pause(0.2, 0.6)
+                if random.random() < 0.3:
+                    self.human_move_mouse(moves=1)
             
-            # Final scroll to ensure spec is in DOM
             self.driver.execute_script("window.scrollTo(0, 2500);")
-            time.sleep(1.0)
+            self.human_pause(0.7, 1.4)
         except: pass
         
         # Final scan scroll
         self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.5)
+        self.human_pause(1.0, 2.0)
         
         # 5. Wait for specification section specifically
         try:
              # Look for table with partial class 'specification' or just any table if in a spec container
              self.wait.until(EC.presence_of_element_located((By.XPATH, "//table[contains(@class, 'specification')] | //div[contains(@id, 'specification')]//table | //table")))
-             time.sleep(0.5)
+             self.human_pause(0.3, 0.8)
         except: 
              logger.warning("Specification table presence timeout.")
     
@@ -586,6 +672,7 @@ class ScrewfixScraper:
             "Brand": "N/A",
             "Quantity": "N/A",
             "Pieces_in_Pack": "N/A",
+            "Pack_Size": "N/A",
             "Coverage_M2": "N/A",
             "Volume_M3": "N/A",
             "Product_Length_M": "N/A",
@@ -594,6 +681,9 @@ class ScrewfixScraper:
             "Product_Weight_Kg": "N/A",
             "Product_Type": "N/A",
             "Material": "N/A",
+            "Unit_Type": "N/A",
+            "Pack_Type": "N/A",
+            "Coverage_Per_Item": "N/A",
             "description": "N/A"
         }
 
@@ -705,6 +795,7 @@ class ScrewfixScraper:
         
             logger.info(f"Found {len(rows)} specification rows")
         
+            raw_dims = {"length": "N/A", "width": "N/A", "height": "N/A", "depth": "N/A", "thickness": "N/A"}
             for row in rows:
                 try:
                     # Use execute_script to get text from columns to bypass visibility issues
@@ -744,29 +835,39 @@ class ScrewfixScraper:
                         else:
                             details["Volume_M3"] = self.clean_vol(val)
 
-                    # PIECES IN PACK
+                    elif "pack size" in key:
+                        details["Pack_Size"] = val
+                    
                     elif "pieces in pack" in key:
                          details["Pieces_in_Pack"] = val
                     
-                    # LENGTH
-                    elif any(x in key.lower() for x in ["product length", "length", "roll length", "cable length"]):
-                        val_dim = self.clean_dim(val)
-                        if "(metric)" in key.lower() or details["Product_Length_M"] == "N/A":
-                            details["Product_Length_M"] = val_dim
-                    
-                    # WIDTH
+                    # WIDTH (Exclude Cutting/Bore/Packaging width)
                     elif "width" in key.lower():
-                        val_dim = self.clean_dim(val)
-                        if "(metric)" in key.lower() or details["Product_Width"] == "N/A":
-                            details["Product_Width"] = val_dim
-                    
-                    # THICKNESS / HEIGHT / DEPTH
-                    elif any(x in key.lower() for x in ["thickness", "depth", "height"]):
-                        # Only accept if it has 'product' OR it's the specific '(metric)' field
-                        if "product" in key.lower() or "(metric)" in key.lower():
+                        # Exclude tool-specific or packaging-specific metrics
+                        exclude = ["cutting", "bore", "packaging", "shipping"]
+                        if not any(x in key.lower() for x in exclude):
                             val_dim = self.clean_dim(val)
-                            if "(metric)" in key.lower() or details["Product_Thickness"] == "N/A":
-                                details["Product_Thickness"] = val_dim
+                            if "(metric)" in key.lower() or raw_dims["width"] == "N/A":
+                                raw_dims["width"] = val_dim
+                    
+                    # LENGTH
+                    elif any(x in key.lower() for x in ["product length", "length (metric)"]):
+                        raw_dims["length"] = self.clean_dim(val)
+                    
+                    # HEIGHT
+                    elif "height" in key.lower():
+                        if "product" in key.lower() or "(metric)" in key.lower():
+                            raw_dims["height"] = self.clean_dim(val)
+
+                    # DEPTH
+                    elif "depth" in key.lower():
+                        if "product" in key.lower() or "(metric)" in key.lower():
+                            raw_dims["depth"] = self.clean_dim(val)
+
+                    # THICKNESS
+                    elif "thickness" in key.lower():
+                        if "product" in key.lower() or "(metric)" in key.lower():
+                            raw_dims["thickness"] = self.clean_dim(val)
                     
                     # WEIGHT
                     elif "weight" in key:
@@ -779,7 +880,25 @@ class ScrewfixScraper:
                     
                     # COVERAGE
                     elif "coverage" in key:
-                        details["Coverage_M2"] = self.clean_area(val)
+                        val_cleaned = self.clean_area(val)
+                        # Handle "per litre" or "per pack"
+                        if "per litre" in key or "/ltr" in val.lower():
+                            try:
+                                # Extract volume to multiply
+                                vol_val = str(details.get("Volume_M3", "0")).split(' ')[0]
+                                if vol_val != "N/A" and float(vol_val) > 0:
+                                    # Convert m3 back to Litres for the math if needed, or if clean_area returned m2
+                                    # Screwfix "Coverage Per Litre" usually refers to 1L.
+                                    # So total coverage = (m2/L) * Total Litres
+                                    # Volume_M3 is in m3. 1 m3 = 1000 Litres.
+                                    total_litres = float(vol_val) * 1000
+                                    details["Coverage_M2"] = val_cleaned * total_litres
+                                else:
+                                    details["Coverage_M2"] = val_cleaned
+                            except:
+                                details["Coverage_M2"] = val_cleaned
+                        else:
+                            details["Coverage_M2"] = val_cleaned
                     
                     # MATERIAL
                     elif "material" in key:
@@ -791,6 +910,26 @@ class ScrewfixScraper:
                 
         except Exception as e:
             logger.warning(f"Spec table scraping failed: {e}")
+
+        # --- USER SPECIFIC DIMENSION LOGIC (Refined for Safety) ---
+        details["Product_Width"] = raw_dims["width"]
+        
+        # 1. Product_Length_M logic: Use Length if available, else use Height as fallback (for machines)
+        if raw_dims["length"] != "N/A":
+            details["Product_Length_M"] = raw_dims["length"]
+        else:
+            details["Product_Length_M"] = raw_dims["height"]
+
+        # 2. Product_Thickness logic:
+        # If Depth is available, it's the thickness.
+        if raw_dims["depth"] != "N/A":
+            details["Product_Thickness"] = raw_dims["depth"]
+        # If Depth is missing but Height exists AND wasn't used as Length, use Height as Thickness
+        elif raw_dims["height"] != "N/A" and details["Product_Length_M"] != raw_dims["height"]:
+            details["Product_Thickness"] = raw_dims["height"]
+        # Else use specific thickness if found
+        elif raw_dims["thickness"] != "N/A":
+            details["Product_Thickness"] = raw_dims["thickness"]
 
         # ==========================================
         # 4.5 EXTRA FIELDS (User Requested)
@@ -807,53 +946,29 @@ class ScrewfixScraper:
         # ==========================================
         desc_parts = []
         
-        # Keep any description already found (e.g., from JSON-LD)
-        current_desc = details.get("description", "N/A")
-        if current_desc != "N/A" and current_desc.strip():
-            desc_parts.append(current_desc.strip())
+        # 1. Product Overview Paragraph
+        try:
+            overview_xpath = "//p[@data-qaid='pdp-product-overview']"
+            overview_elem = self.driver.find_element(By.XPATH, overview_xpath)
+            overview_text = self.driver.execute_script("return arguments[0].innerText;", overview_elem).strip()
+            if overview_text:
+                desc_parts.append(overview_text)
+        except:
+            pass
 
-        # Try to find more paragraph text
-        desc_selectors = [
-            "//p[@data-qaid='pdp-product-overview']",  # New primary selector
-            "//*[@id='product_additional_details_container']",
-            "//*[@itemprop='description']",
-            "//div[contains(@class, 'product-description')]",
-            "//div[@data-qaid='pdp-description']"
-        ]
-        for selector in desc_selectors:
-            try:
-                # Use find_element to avoid multiple matches
-                desc_elem = self.driver.find_element(By.XPATH, selector)
-                text = self.driver.execute_script("return arguments[0].innerText;", desc_elem).strip()
-                if text and len(text) > 30:
-                    # Check if this text is already mostly covered by current desc
-                    is_duplicate = False
-                    for existing in desc_parts:
-                        if text[:50] in existing or existing[:50] in text:
-                            is_duplicate = True
-                            break
-                    if not is_duplicate:
-                        desc_parts.append(text)
-                        break
-            except:
-                continue
-
-        # Extract bullets - Use find_elements but take only the first visible one
+        # 2. Key Features Bullets
         try:
             bullet_xpath = "//ul[@data-qaid='pdp-product-bullets']//li | //ul[contains(@class, '_5QgGW8')]//li"
             bullet_elems = self.driver.find_elements(By.XPATH, bullet_xpath)
             if bullet_elems:
-                # Group by parent to identify different instances, take first parent's children
+                # Group by first parent found to avoid collecting multiple ULs if they exist
                 first_parent = bullet_elems[0].find_element(By.XPATH, "..")
                 bullets_list = [self.driver.execute_script("return arguments[0].innerText;", b).strip() for b in bullet_elems if b.find_element(By.XPATH, "..") == first_parent]
                 bullets_list = [b for b in bullets_list if b]
                 
                 if bullets_list:
                     bullet_text = "\n".join([f"• {b}" for b in bullets_list])
-                    # Check if bullets are already in the description parts
-                    first_bullet_sample = bullets_list[0][:30]
-                    if not any(first_bullet_sample in existing for existing in desc_parts):
-                        desc_parts.append("Key Features:\n" + bullet_text)
+                    desc_parts.append("Key Features:\n" + bullet_text)
         except:
             pass
 
@@ -862,27 +977,81 @@ class ScrewfixScraper:
             details["description"] = "\n\n".join(desc_parts)
 
         # ==========================================
-        # 6. AUTOMATIC VOLUME CALCULATION
+        # 6. AUTOMATIC CALCULATIONS (VOLUME & COVERAGE)
         # ==========================================
+        # 6a. Volume Calculation
         if details["Volume_M3"] == "N/A":
             if all(details[x] != "N/A" for x in ["Product_Length_M", "Product_Width", "Product_Thickness"]):
                 try:
-                    # Values are already converted to meters (floats)
                     l = details["Product_Length_M"]
                     w = details["Product_Width"]
                     t = details["Product_Thickness"]
-                
-                    if isinstance(l, (int, float)) and isinstance(w, (int, float)) and isinstance(t, (int, float)):
-                        if l > 0 and w > 0 and t > 0:
-                            calc_vol = l * w * t
-                            details["Volume_M3"] = f"{calc_vol:.6f} m3 (Calculated)"
-                            logger.info(f"[v] Calculated Volume: {calc_vol:.6f} m3")
-                except Exception as e:
-                    logger.debug(f"Volume calculation failed: {e}")
+                    if all(isinstance(x, (int, float)) and x > 0 for x in [l, w, t]):
+                        calc_vol = l * w * t
+                        details["Volume_M3"] = f"{calc_vol:.6f} m3 (Calculated)"
+                except: pass
+
+        # 6b. Coverage Calculation (Footprint) - NEW FIX
+        if details["Coverage_M2"] == "N/A":
+            if all(details[x] != "N/A" for x in ["Product_Length_M", "Product_Width"]):
+                try:
+                    l = details["Product_Length_M"]
+                    w = details["Product_Width"]
+                    if all(isinstance(x, (int, float)) and x > 0 for x in [l, w]):
+                        calc_cov = l * w
+                        details["Coverage_M2"] = f"{calc_cov:.6f} m2 (Calculated)"
+                        logger.info(f"[v] Calculated Coverage: {calc_cov:.6f} m2")
+                except: pass
 
         # ==========================================
         # 7. FINAL VALIDATION & LOGGING
         # ==========================================
+        text_parts = [details.get("Name"), details.get("description")]
+        text_blob = " ".join([p for p in text_parts if p and p != "N/A"])
+        
+        # 6c. Logic for Packaging Type (User Requested)
+        # Default based on Pack information
+        if details["Pack_Size"] != "1" or details["Pieces_in_Pack"] != "1":
+            details["Packaging_Type"] = "PACK"
+        else:
+            details["Packaging_Type"] = "EACH"
+            
+        # Exception: Machines, Tools, and Generators are ALWAYS 'EACH' even if pack info exists
+        item_type = str(details.get("Product_Type", "")).lower()
+        item_name = details["Name"].lower()
+        machine_keywords = ["generator", "tool", "machine", "chaser", "drill", "saw", "vacuum", "pump", "inverter"]
+        if any(k in item_type or k in item_name for k in machine_keywords):
+            details["Packaging_Type"] = "EACH"
+
+        inferred = self._infer_units_from_text(text_blob)
+
+        if details["Pack_Type"] == "N/A" and inferred["Pack_Type"] != "N/A":
+            details["Pack_Type"] = inferred["Pack_Type"]
+
+        if details["Coverage_M2"] == "N/A" and inferred["Coverage_M2"] != "N/A":
+            details["Coverage_M2"] = inferred["Coverage_M2"]
+        if details["Volume_M3"] == "N/A" and inferred["Volume_M3"] != "N/A":
+            details["Volume_M3"] = inferred["Volume_M3"]
+        if details["Product_Length_M"] == "N/A" and inferred["Length_M"] != "N/A":
+            details["Product_Length_M"] = inferred["Length_M"]
+        if details["Product_Weight_Kg"] == "N/A" and inferred["Weight_Kg"] != "N/A":
+            details["Product_Weight_Kg"] = inferred["Weight_Kg"]
+        # Pieces inference removed per user instruction
+
+        # Unit_Type is now strictly N/A unless explicitly found in the specification table mapping.
+        # No more automated guessing (PCS/M2/KG/etc.) per user instruction.
+
+        if details["Coverage_Per_Item"] == "N/A":
+            # Populate Coverage_Per_Item directly based on available data points
+            if details["Coverage_M2"] != "N/A":
+                details["Coverage_Per_Item"] = self._format_unit_value(details["Coverage_M2"], "m2")
+            elif details["Volume_M3"] != "N/A":
+                details["Coverage_Per_Item"] = self._format_unit_value(details["Volume_M3"], "m3")
+            elif details["Pieces_in_Pack"] != "N/A" and details["Pieces_in_Pack"] != "1":
+                details["Coverage_Per_Item"] = f"{details['Pieces_in_Pack']} pcs"
+            else:
+                details["Coverage_Per_Item"] = "N/A"
+
         extracted_fields = [k for k, v in details.items() if v != "N/A" and v != 0.0]
         logger.info(f"[v] Extracted {len(extracted_fields)} fields: {', '.join(extracted_fields)}")
     
@@ -908,10 +1077,6 @@ class ScrewfixScraper:
                 else:
                     details["Brand"] = str(data["brand"])
             
-            # Description (JSON-LD often has a clean description)
-            if "description" in data:
-                details["description"] = data["description"]
-
             # Images - Use COMMA separator
             if "image" in data:
                 imgs = data["image"]
@@ -935,9 +1100,9 @@ class ScrewfixScraper:
         
         # Save if we've reached a new multiple of 20
         if current_total - self.last_save_count >= 20:
-            logger.info("*" * 50)
+            logger.info("*-" * 50)
             logger.info(f"--- BATCH REACHED: Saving {current_total} items to CSV/Excel ---")
-            logger.info("*" * 50)
+            logger.info("*-" * 50)
             self.save_to_file(self.all_scraped_data, "screwfix_building_materials_london.csv")
             self.save_to_file(self.all_scraped_data, "screwfix_building_materials_london.xlsx")
             self.last_save_count = current_total
@@ -983,7 +1148,9 @@ class ScrewfixScraper:
                 try:
                     result_batch = future.result()
                     fully_scraped_data.extend(result_batch)
+                    logger.info("--------------------------")
                     logger.info(f"Worker batch finished. Total collected so far: {len(fully_scraped_data)}")
+                    logger.info("--------------------------")
                 except Exception as exc:
                     logger.error(f"Worker generated an exception: {exc}")
 
