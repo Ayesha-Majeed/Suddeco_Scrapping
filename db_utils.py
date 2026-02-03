@@ -33,9 +33,7 @@ def create_table():
             price NUMERIC,
             region TEXT,
             supplier TEXT,
-            select_task TEXT,
             all_images TEXT,
-            material_unit TEXT,
             description TEXT,
             quantity TEXT,
             pieces_in_pack TEXT,
@@ -47,10 +45,8 @@ def create_table():
             product_weight_kg TEXT,
             product_type TEXT,
             material TEXT,
-            unit_type TEXT,
             pack_type TEXT,
-            pack_size TEXT,
-            coverage_per_item TEXT
+            pack_size TEXT
         );
     """)
     
@@ -67,10 +63,8 @@ def create_table():
         ("product_weight_kg", "TEXT"),
         ("product_type", "TEXT"),
         ("material", "TEXT"),
-        ("unit_type", "TEXT"),
         ("pack_type", "TEXT"),
         ("pack_size", "TEXT"),
-        ("coverage_per_item", "TEXT")
     ]
     for col_name, col_type in columns:
         try:
@@ -97,12 +91,12 @@ def save_product(product):
     try:
         cur.execute("""
             INSERT INTO products (
-                url, name, sku, brand, price, region, supplier, select_task, all_images, material_unit,
+                url, name, sku, brand, price, region, supplier, all_images,
                 description, quantity, pieces_in_pack, coverage_m2, volume_m3, 
                 product_length_m, product_width, product_thickness, product_weight_kg, 
-                product_type, material, unit_type, pack_type, pack_size, coverage_per_item
+                product_type, material, pack_type, pack_size
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url) DO UPDATE SET
                 name = EXCLUDED.name,
                 sku = EXCLUDED.sku,
@@ -110,9 +104,7 @@ def save_product(product):
                 price = EXCLUDED.price,
                 region = EXCLUDED.region,
                 supplier = EXCLUDED.supplier,
-                select_task = EXCLUDED.select_task,
                 all_images = EXCLUDED.all_images,
-                material_unit = EXCLUDED.material_unit,
                 description = EXCLUDED.description,
                 quantity = EXCLUDED.quantity,
                 pieces_in_pack = EXCLUDED.pieces_in_pack,
@@ -124,10 +116,8 @@ def save_product(product):
                 product_weight_kg = EXCLUDED.product_weight_kg,
                 product_type = EXCLUDED.product_type,
                 material = EXCLUDED.material,
-                unit_type = EXCLUDED.unit_type,
                 pack_type = EXCLUDED.pack_type,
-                pack_size = EXCLUDED.pack_size,
-                coverage_per_item = EXCLUDED.coverage_per_item;
+                pack_size = EXCLUDED.pack_size;
         """, (
             product.get("Link"),
             product.get("Name"),
@@ -136,9 +126,7 @@ def save_product(product):
             product.get("Price_Inc_VAT"),
             product.get("Region"),
             product.get("Supplier"),
-            product.get("Select Task"),
             product.get("All_Images"),
-            product.get("Material Unit"),
             product.get("description"),
             product.get("Quantity"),
             product.get("Pieces_in_Pack"),
@@ -150,10 +138,8 @@ def save_product(product):
             product.get("Product_Weight_Kg"),
             product.get("Product_Type"),
             product.get("Material"),
-            product.get("Unit_Type"),
             product.get("Pack_Type"),
-            product.get("Pack_Size"),
-            product.get("Coverage_Per_Item"),
+            product.get("Pack_Size")
         ))
         conn.commit()
     except Exception as e:

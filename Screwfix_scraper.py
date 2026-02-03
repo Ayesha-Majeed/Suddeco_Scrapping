@@ -370,35 +370,6 @@ class ScrewfixScraper:
             
         return all_data
 
-    def scrape_all_pages(self, start_url):
-        """Scrapes all paginated product pages starting from start_url."""
-        self.driver.get(start_url)
-        all_products = []
-        page_num = 1
-        while True:
-            self.scroll_to_bottom(pause_time=1)
-            products = self.parse_results_page()
-            logger.info(f"Page {page_num}: Found {len(products)} products.")
-            all_products.extend(products)
-    
-            # Pagination: Find "Next Page" button
-            try:
-                next_btn = self.driver.find_element(By.XPATH, "//a[@data-qaid='pagination-button-next']")
-                if next_btn.is_displayed():
-                    next_url = next_btn.get_attribute('href')
-                    if next_url and not next_url.startswith('javascript'):
-                        full_next_url = next_url
-                        if not next_url.startswith("http"):
-                            full_next_url = self.base_url + next_url
-                        self.driver.get(full_next_url)
-                        page_num += 1
-                        time.sleep(2)
-                        continue
-            except Exception as e:
-                logger.info("No more pages found or error: " + str(e))
-            break
-        return all_products
-        
     def parse_results_page(self):
         """Extracts basic product info (Name, Link, SKU) from a listing page."""
         products = []
@@ -529,16 +500,6 @@ class ScrewfixScraper:
                 
         if not clean_val: return "N/A"
         return float(clean_val) * factor
-
-    def _format_unit_value(self, value, unit):
-        if value == "N/A":
-            return "N/A"
-        if isinstance(value, (int, float)):
-            return f"{value} {unit}"
-        value_str = str(value).strip()
-        if unit.lower() in value_str.lower():
-            return value_str
-        return f"{value_str} {unit}"
 
     def _infer_units_from_text(self, text):
         result = {
@@ -683,7 +644,6 @@ class ScrewfixScraper:
             "Material": "N/A",
             "Unit_Type": "N/A",
             "Pack_Type": "N/A",
-            "Coverage_Per_Item": "N/A",
             "description": "N/A"
         }
 
@@ -1009,20 +969,6 @@ class ScrewfixScraper:
         text_parts = [details.get("Name"), details.get("description")]
         text_blob = " ".join([p for p in text_parts if p and p != "N/A"])
         
-        # 6c. Logic for Packaging Type (User Requested)
-        # Default based on Pack information
-        if details["Pack_Size"] != "1" or details["Pieces_in_Pack"] != "1":
-            details["Packaging_Type"] = "PACK"
-        else:
-            details["Packaging_Type"] = "EACH"
-            
-        # Exception: Machines, Tools, and Generators are ALWAYS 'EACH' even if pack info exists
-        item_type = str(details.get("Product_Type", "")).lower()
-        item_name = details["Name"].lower()
-        machine_keywords = ["generator", "tool", "machine", "chaser", "drill", "saw", "vacuum", "pump", "inverter"]
-        if any(k in item_type or k in item_name for k in machine_keywords):
-            details["Packaging_Type"] = "EACH"
-
         inferred = self._infer_units_from_text(text_blob)
 
         if details["Pack_Type"] == "N/A" and inferred["Pack_Type"] != "N/A":
@@ -1040,17 +986,6 @@ class ScrewfixScraper:
 
         # Unit_Type is now strictly N/A unless explicitly found in the specification table mapping.
         # No more automated guessing (PCS/M2/KG/etc.) per user instruction.
-
-        if details["Coverage_Per_Item"] == "N/A":
-            # Populate Coverage_Per_Item directly based on available data points
-            if details["Coverage_M2"] != "N/A":
-                details["Coverage_Per_Item"] = self._format_unit_value(details["Coverage_M2"], "m2")
-            elif details["Volume_M3"] != "N/A":
-                details["Coverage_Per_Item"] = self._format_unit_value(details["Volume_M3"], "m3")
-            elif details["Pieces_in_Pack"] != "N/A" and details["Pieces_in_Pack"] != "1":
-                details["Coverage_Per_Item"] = f"{details['Pieces_in_Pack']} pcs"
-            else:
-                details["Coverage_Per_Item"] = "N/A"
 
         extracted_fields = [k for k, v in details.items() if v != "N/A" and v != 0.0]
         logger.info(f"[v] Extracted {len(extracted_fields)} fields: {', '.join(extracted_fields)}")
